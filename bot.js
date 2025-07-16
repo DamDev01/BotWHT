@@ -7,6 +7,10 @@ const puppeteer = require('puppeteer');
 const cron = require('node-cron');
 const axios = require('axios');
 const { traduzirPDF } = require('./pdf_translate');
+const FormData = require('form-data');
+const fsExtra = require('fs-extra');
+const { spawn } = require('child_process');
+const cheerio = require('cheerio');
 
 // Configurações
 const GROUP_ID = "120363324835732918@g.us";
@@ -355,35 +359,15 @@ async function downloadArtigo(doi) {
 }
 
 async function resumirConversas(groupId, limit = 100) {
-    const palavrasChave = ['nutrição', 'nutricionista', 'dieta', 'alimentação', 'saúde', 'doença', 'exame', 'diagnóstico', 'tratamento', 'medicina', 'clinico', 'sintoma', 'paciente', 'consulta', 'protocolo', 'clinica'];
-    function isRelevante(mensagem) {
-        if (!mensagem) return false;
-        const msg = mensagem.toLowerCase();
-        return palavrasChave.some(palavra => msg.includes(palavra) && msg.length > 20);
-    }
     try {
         const chat = await client.getChatById(groupId);
         const messages = await chat.fetchMessages({ limit });
-        const mensagensRelevantes = messages.filter(msg => !msg.fromMe && !msg.body.startsWith('!') && isRelevante(msg.body));
-        const resumoPorAutor = {};
-        for (const msg of mensagensRelevantes) {
-            const authorId = extrairAuthor(msg);
-            if (!authorId) continue;
-            const contact = await client.getContactById(authorId);
-            const authorName = contact.pushname || contact.name || authorId.split('@')[0];
-            if (!resumoPorAutor[authorName]) resumoPorAutor[authorName] = { mensagens: [], totalMensagens: 0 };
-            resumoPorAutor[authorName].mensagens.push(truncarMensagem(msg.body));
-            resumoPorAutor[authorName].totalMensagens++;
-        }
-        let resumo = `📝 *RESUMO TÉCNICO DAS CONVERSAS* 📝\n`;
-        const autoresOrdenados = Object.entries(resumoPorAutor).sort((a, b) => b[1].totalMensagens - a[1].totalMensagens).slice(0, 5);
-        for (const [nome, info] of autoresOrdenados) {
-            resumo += `👤 *${nome}* (${info.totalMensagens} msgs):\n`;
-            info.mensagens.slice(0, 3).forEach(msg => resumo += `   • ${msg}\n`);
-            resumo += `\n`;
-        }
-        resumo += `📊 *Estatísticas*:\n   • Total analisado: ${messages.length}\n   • Relevantes: ${mensagensRelevantes.length}\n   • Tópicos: ${palavrasChave.join(', ')}\n_Gerado em ${new Date().toLocaleString()}_`;
-        return resumo;
+        const mensagensRelevantes = messages
+            .filter(msg => !msg.fromMe && !msg.body.startsWith('!') && msg.body.length > 20)
+            .map(msg => msg.body);
+
+        const resumo = mensagensRelevantes.join(' ');
+        return `📝 *RESUMO DAS ÚLTIMAS ${limit} MENSAGENS:*\n\n${resumo}`;
     } catch (error) {
         console.error("❌ Erro ao gerar resumo:", error);
         return `❌ Erro ao gerar resumo: ${error.message}`;
@@ -391,7 +375,13 @@ async function resumirConversas(groupId, limit = 100) {
 }
 
 async function enviarLinkTelegram(chatId) {
-    await client.sendMessage(chatId, `📚 *PRECISA DE MATERIAL?*\nEntre no Telegram:\n🔗 https://t.me/+_AUQpTYNHy00MDhh`);
+    try {
+        await client.sendMessage(chatId, `📚 *PRECISA DE MATERIAL?*
+Entre no Telegram:
+🔗 https://t.me/+2IOMWchS3dk5N2Jh`);
+    } catch (error) {
+        console.error('❌ Erro ao enviar link do Telegram:', error.message);
+    }
 }
 
 async function enviarLinkGrupo(chatId) {
@@ -408,8 +398,15 @@ async function enviarAoTelegram(mensagem) {
 }
 
 async function encaminharPedidoAoTelegram(chatId, pedido, nomeUsuario) {
-    const mensagem = `📚 *Novo pedido no WhatsApp:*\n👤 *Usuário:* ${nomeUsuario}\n📝 *Pedido:* ${pedido}\n🔗 https://t.me/+_AUQpTYNHy00MDhh`;
-    await enviarAoTelegram(mensagem);
+    const mensagem = `📚 *Novo pedido no WhatsApp:*
+👤 *Usuário:* ${nomeUsuario}
+📝 *Pedido:* ${pedido}
+🔗 https://t.me/+2IOMWchS3dk5N2Jh`;
+    try {
+        await enviarAoTelegram(mensagem);
+    } catch (error) {
+        console.error('❌ Erro ao encaminhar pedido ao Telegram:', error.message);
+    }
 }
 
 const client = new Client({
@@ -449,6 +446,7 @@ client.on('ready', async () => {
     console.log('✅ Bot conectado!');
     await client.sendMessage(GROUP_ID, `🤖 *Bot Ativo* 🤖
 Comandos:
+
 !mencionar [msg] - Menciona todos
 !resumo [qtd] - Resumo das conversas
 !membros - Total de membros
@@ -457,7 +455,14 @@ Comandos:
 !grupo - Link do grupo
 !artigo [DOI/título] - Baixa artigo
 !bot [pedido] - Encaminha ao Telegram
-!traduzir - Traduzir PDF`);
+!traduzir - Traduzir PDF
+!livro [título] - Busca livros
+!upload - Faz upload de um arquivo
+!nexus [tipo] [termo] - Busca em bibliotecas científicas (tipo: artigo/livro)`);
+
+    // Enviar newsletter ao iniciar
+    console.log('📰 Enviando newsletter inicial...');
+    enviarNewsletterNutricao();
 });
 
 cron.schedule('0 15 * * *', () => {
@@ -530,6 +535,77 @@ client.on('message', async (message) => {
                 await client.sendMessage(GROUP_ID, `👥 *Membros:* ${totalMembros}`);
             }
 
+            else if (messageText.startsWith("!upload")) {
+                await client.sendMessage(GROUP_ID, `@${message.author.split('@')[0]}, por favor envie o arquivo que deseja fazer upload.`, { mentions: [message.author] });
+                
+                const filter = (msg) => msg.hasMedia && msg.author === message.author;
+                const chat = await client.getChatById(GROUP_ID);
+                let recebido = false;
+                
+                const onMedia = async (mediaMsg) => {
+                    if (recebido || mediaMsg.author !== message.author) return;
+                    recebido = true;
+                    client.removeListener('message', onMedia);
+                    
+                    try {
+                        const media = await mediaMsg.downloadMedia();
+                        const buffer = Buffer.from(media.data, 'base64');
+                        const tempFile = `temp_${Date.now()}_${media.filename || 'file'}`;
+                        fs.writeFileSync(tempFile, buffer);
+                        
+                        await client.sendMessage(GROUP_ID, `⏳ Fazendo upload do arquivo, aguarde...`);
+                        const result = await uploadFile(tempFile);
+                        
+                        if (result.success) {
+                            await client.sendMessage(GROUP_ID, `✅ Upload concluído!\n🔗 Link: ${result.url}`);
+                        } else {
+                            throw new Error('Falha no upload');
+                        }
+                        
+                        fs.unlinkSync(tempFile);
+                    } catch (err) {
+                        await client.sendMessage(GROUP_ID, `❌ Erro no upload: ${err.message}`);
+                    }
+                };
+                
+                client.on('message', onMedia);
+            }
+
+            else if (messageText.startsWith("!nexus")) {
+                const args = message.body.split(' ');
+                if (args.length < 3) {
+                    await client.sendMessage(GROUP_ID, `⚠️ Uso correto: !nexus [tipo] [termo]\nTipos: artigo, livro\nExemplo: !nexus artigo diabetes`);
+                    return;
+                }
+
+                const type = args[1].toLowerCase();
+                const query = args.slice(2).join(' ');
+
+                if (type !== 'artigo' && type !== 'livro') {
+                    await client.sendMessage(GROUP_ID, `⚠️ Tipo inválido. Use 'artigo' ou 'livro'.`);
+                    return;
+                }
+
+                try {
+                    await client.sendMessage(GROUP_ID, `🔍 Buscando por "${query}"...`);
+                    const searchType = type === 'artigo' ? 'scientific' : 'books';
+                    const results = await searchNexus(query, searchType);
+
+                    if (results && results.length > 0) {
+                        let message = `📚 *Resultados para "${query}":*\n\n`;
+                        results.forEach((item, index) => {
+                            message += `${index + 1}. *${item.title}*\n🔗 ${item.url}\n\n`;
+                        });
+                        await client.sendMessage(GROUP_ID, message);
+                    } else {
+                        await client.sendMessage(GROUP_ID, `❌ Nenhum resultado encontrado para "${query}".`);
+                    }
+                } catch (error) {
+                    console.error('❌ Erro na busca:', error);
+                    await client.sendMessage(GROUP_ID, `❌ Erro ao buscar: ${error.message}`);
+                }
+            }
+
             else if (messageText === "!ajuda") {
                 await client.sendMessage(GROUP_ID, `🤖 *Bot Ativo* 🤖
 Comandos:
@@ -542,7 +618,10 @@ Comandos:
 !grupo - Link do grupo
 !artigo [DOI/título] - Baixa artigo
 !bot [pedido] - Encaminha ao Telegram
-!traduzir - Traduzir PDF`);
+!traduzir - Traduzir PDF
+!livro [título] - Busca livros
+!upload - Faz upload de um arquivo
+!nexus [tipo] [termo] - Busca em bibliotecas científicas (tipo: artigo/livro)`);
             }
 
             else if (messageText === "!braia") {
@@ -593,6 +672,24 @@ Comandos:
                     }
                 };
                 client.on('message', onMedia);
+            }
+
+            else if (messageText.startsWith("!livro")) {
+                const titulo = message.body.replace('!livro', '').trim();
+                if (!titulo) {
+                    await client.sendMessage(message.from, '⚠️ Por favor, forneça o título do livro após o comando !livro.');
+                    return;
+                }
+
+                try {
+                    await client.sendMessage(message.from, `🔍 Buscando o livro "${titulo}"...`);
+                    const fileName = await buscarLivroNaWeb(titulo);
+                    const media = MessageMedia.fromFilePath(fileName);
+                    await client.sendMessage(message.from, media, { caption: `📚 Aqui está o livro "${titulo}".` });
+                    fs.unlinkSync(fileName); // Remove o arquivo após o envio
+                } catch (error) {
+                    await client.sendMessage(message.from, `❌ Não foi possível encontrar o livro "${titulo}": ${error.message}`);
+                }
             }
         }
     } catch (error) {
@@ -655,3 +752,201 @@ setInterval(() => {
     const memTotal = Object.keys(membrosGrupo[GROUP_ID] || {}).length;
     console.log(`🕒 Bot rodando - ${new Date().toLocaleString()} - ${memTotal} membros`);
 }, 3600000);
+
+async function buscarLivroNaWeb(titulo) {
+    console.log(`🔍 Pesquisando livro: "${titulo}"`);
+    const domains = [
+        'https://libgen.is',
+        'https://libgen.rs',
+        'https://libgen.li',
+        'https://zlibrary.to',
+        'https://openlibrary.org',
+        'https://sci-hub.se',
+        'https://annas-archive.org',
+        'https://pdfdrive.com',
+        'https://ebookhunter.ch'
+    ];
+
+    for (const domain of domains) {
+        try {
+            const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+            const page = await browser.newPage();
+            await page.goto(`${domain}/search.php?req=${encodeURIComponent(titulo)}&open=0&res=25&view=simple&phrase=1&column=def`, { waitUntil: 'networkidle2' });
+
+            const link = await page.evaluate(() => {
+                const result = document.querySelector('table a[href*="book"]');
+                return result ? result.href : null;
+            });
+
+            if (link) {
+                await page.goto(link, { waitUntil: 'networkidle2' });
+                const downloadLink = await page.evaluate(() => {
+                    const link = document.querySelector('a[href*=".pdf"]');
+                    return link ? link.href : null;
+                });
+
+                if (downloadLink && downloadLink.startsWith('http')) {
+                    console.log(`📚 Link de download encontrado: ${downloadLink}`);
+                    const response = await axios.get(downloadLink, { responseType: 'arraybuffer' });
+                    const fileName = `livro_${Date.now()}.pdf`;
+                    fs.writeFileSync(fileName, response.data);
+                    await browser.close();
+                    return fileName;
+                } else {
+                    console.log(`⚠️ Nenhum link válido encontrado em ${domain}.`);
+                }
+            }
+
+            await browser.close();
+        } catch (error) {
+            console.error(`❌ Erro ao buscar livro em ${domain}:`, error.message);
+        }
+    }
+
+    // Pesquisa na web como alternativa
+    try {
+        console.log('🌐 Ampliando busca na web...');
+        const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+        const page = await browser.newPage();
+        await page.goto(`https://www.google.com/search?q=${encodeURIComponent(titulo + ' filetype:pdf')}`, { waitUntil: 'networkidle2' });
+
+        const webLink = await page.evaluate(() => {
+            const result = document.querySelector('a[href*=".pdf"]');
+            return result ? result.href : null;
+        });
+
+        if (webLink && webLink.startsWith('http')) {
+            console.log(`🌐 Link encontrado na web: ${webLink}`);
+            const response = await axios.get(webLink, { responseType: 'arraybuffer' });
+            const fileName = `livro_web_${Date.now()}.pdf`;
+            fs.writeFileSync(fileName, response.data);
+            await browser.close();
+            return fileName;
+        } else {
+            console.log('⚠️ Nenhum link válido encontrado na web.');
+        }
+
+        await browser.close();
+    } catch (error) {
+        console.error('❌ Erro ao buscar na web:', error.message);
+    }
+
+    throw new Error('Livro não encontrado em nenhuma fonte ou na web.');
+}
+
+async function uploadFile(filePath) {
+    try {
+        const form = new FormData();
+        form.append('file', fsExtra.createReadStream(filePath));
+        
+        const response = await axios.post('https://api.anonfiles.com/upload', form, {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity
+        });
+
+        if (response.data.status) {
+            return {
+                success: true,
+                url: response.data.data.file.url.full
+            };
+        } else {
+            throw new Error(response.data.error.message || 'Erro no upload');
+        }
+    } catch (error) {
+        console.error('❌ Erro no upload:', error.message);
+        throw error;
+    }
+}
+
+async function searchNexus(query, type = 'scientific') {
+    return new Promise((resolve, reject) => {
+        const python = spawn('python', ['nexus_search.py', query, type]);
+        let data = '';
+
+        python.stdout.on('data', (chunk) => {
+            data += chunk;
+        });
+
+        python.stderr.on('data', (data) => {
+            console.error(`🐍 Erro Python: ${data}`);
+        });
+
+        python.on('close', (code) => {
+            if (code !== 0) {
+                reject(new Error(`Processo Python encerrou com código ${code}`));
+                return;
+            }
+            try {
+                const results = JSON.parse(data);
+                resolve(results);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    });
+}
+
+async function buscarNoticiasNutricao() {
+    try {
+        // Fontes RSS confiáveis de nutrição (Google News em português e inglês)
+        const urls = [
+            'https://news.google.com/rss/search?q=nutri%C3%A7%C3%A3o+OR+alimenta%C3%A7%C3%A3o+saud%C3%A1vel+OR+dieta&hl=pt-BR&gl=BR&ceid=BR:pt-419',
+            'https://news.google.com/rss/search?q=nutrition+OR+healthy+diet+OR+food+science&hl=en-US&gl=US&ceid=US:en',
+            'https://www.sciencedaily.com/rss/health_medicine/nutrition.xml'
+        ];        let noticias = [];
+        for (const url of urls) {
+            try {
+                const { data } = await axios.get(url, { timeout: 10000 });
+                const $ = cheerio.load(data, { xmlMode: true });
+                const items = $('item').slice(0, 3); // 3 de cada fonte
+                items.each((i, el) => {
+                    const title = $(el).find('title').text();
+                    const link = $(el).find('link').text();
+                    const pubDate = $(el).find('pubDate').text();
+                    let fonte = 'Google News';
+                    if (url.includes('sciencedaily')) fonte = 'ScienceDaily';
+                    noticias.push({ title, link, pubDate, fonte });
+                });
+                console.log(`✅ Fonte ${url} processada com sucesso`);
+            } catch (error) {
+                console.error(`⚠️ Erro ao processar fonte ${url}:`, error.message);
+                // Continua para próxima fonte mesmo se uma falhar
+            }
+        }
+        // Ordena por data (mais recente primeiro)
+        noticias.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+        return noticias.slice(0, 5); // Top 5
+    } catch (error) {
+        console.error('❌ Erro ao buscar notícias:', error.message);
+        return [];
+    }
+}
+
+async function enviarNewsletterNutricao() {    let noticias = [];
+    try {
+        noticias = await buscarNoticiasNutricao();
+    } catch (error) {
+        console.error('❌ Erro ao buscar notícias:', error);
+        await client.sendMessage(GROUP_ID, '⚠️ Não foi possível buscar as notícias agora. Tentarei novamente mais tarde.');
+        return;
+    }
+    
+    if (!noticias.length) {
+        await client.sendMessage(GROUP_ID, '⚠️ Não há notícias de nutrição disponíveis no momento.');
+        return;
+    }
+    let texto = '🥗 *NUTRI NEWS* 🥑\n\n';
+    texto += 'Olá, grupo! Aqui estão as novidades mais quentes e confiáveis do mundo da Nutrição de hoje:\n\n';
+    noticias.forEach((n, i) => {
+        texto += `*${i + 1}.* ${n.title}\n🔗 ${n.link}\n📰 _Fonte: ${n.fonte}_\n\n`;
+    });
+    texto += '💡 _Dica do dia: Lembre-se de beber água e cuidar da sua alimentação!_\n';    texto += '\n🌐 *Fontes*: Google News e fontes especializadas em nutrição';
+    texto += '\n\n💪 Se achou útil, compartilhe com amigos que se interessam por saúde e nutrição! 😉';
+    await client.sendMessage(GROUP_ID, texto);
+}
+
+// Agendamento diário às 14:10
+cron.schedule('10 14 * * *', () => {
+    console.log('⏰ Enviando newsletter de nutrição...');
+    enviarNewsletterNutricao();
+});
