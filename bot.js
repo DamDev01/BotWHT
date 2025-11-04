@@ -450,6 +450,22 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
+client.on('loading_screen', (percent, message) => {
+    console.log('🔄 Carregando:', percent, '%', message || '');
+});
+
+client.on('authenticated', () => {
+    console.log('✅ Autenticado com sucesso!');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('❌ Falha na autenticação:', msg);
+});
+
+client.on('disconnected', (reason) => {
+    console.log('❌ Cliente desconectado:', reason);
+});
+
 async function checkForNewPosts() {
     console.log('🔍 Verificando Instagram...');
     const browser = await puppeteer.launch({ headless: true });
