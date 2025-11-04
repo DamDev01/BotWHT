@@ -424,7 +424,7 @@ const client = new Client({
             '--single-process',
             '--disable-extensions'
         ],
-        executablePath: '/usr/bin/google-chrome-stable'
+        executablePath: '/usr/bin/chromium'
     }
 });
 
