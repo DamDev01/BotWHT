@@ -735,13 +735,25 @@ process.on('SIGINT', () => gracefulShutdown(client, 'SIGINT'));
 
 process.on('uncaughtException', async (error) => {
     console.error('❌ Erro não tratado:', error);
-    await client.sendMessage(GROUP_ID, `❌ *ERRO CRÍTICO:* ${error.message}`);
+    try {
+        if (client.pupPage && client.info) {
+            await client.sendMessage(GROUP_ID, `❌ *ERRO CRÍTICO:* ${error.message}`);
+        }
+    } catch (sendError) {
+        console.error('Não foi possível enviar mensagem de erro:', sendError);
+    }
     process.exit(1);
 });
 
 process.on('unhandledRejection', async (error) => {
     console.error('❌ Rejeição não tratada:', error);
-    await client.sendMessage(GROUP_ID, `❌ *ERRO CRÍTICO:* ${error.message}`);
+    try {
+        if (client.pupPage && client.info) {
+            await client.sendMessage(GROUP_ID, `❌ *ERRO CRÍTICO:* ${error.message}`);
+        }
+    } catch (sendError) {
+        console.error('Não foi possível enviar mensagem de erro:', sendError);
+    }
     process.exit(1);
 });
 
