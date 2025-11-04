@@ -411,7 +411,21 @@ async function encaminharPedidoAoTelegram(chatId, pedido, nomeUsuario) {
 
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { headless: true, args: ['--no-sandbox'] }
+    puppeteer: {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-extensions'
+        ],
+        executablePath: '/usr/bin/google-chrome-stable'
+    }
 });
 
 client.on('qr', (qr) => {
