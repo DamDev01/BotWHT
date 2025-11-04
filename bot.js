@@ -409,23 +409,40 @@ async function encaminharPedidoAoTelegram(chatId, pedido, nomeUsuario) {
     }
 }
 
+// Detecta automaticamente um binário do Chrome/Chromium disponível no sistema.
+const possibleBrowserPaths = [
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium'
+];
+let browserExecutable = possibleBrowserPaths.find(p => fs.existsSync(p));
+if (!browserExecutable) {
+    console.warn('⚠️ Nenhum binário do Chrome/Chromium encontrado nos caminhos comuns. O Puppeteer tentará usar o binário padrão/bundled.');
+} else {
+    console.log(`✅ Usando binário do navegador em: ${browserExecutable}`);
+}
+
+const puppeteerOptions = {
+    headless: true,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-extensions'
+    ]
+};
+if (browserExecutable) puppeteerOptions.executablePath = browserExecutable;
+
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--disable-gpu',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-extensions'
-        ],
-        executablePath: '/usr/bin/chromium'
-    }
+    puppeteer: puppeteerOptions
 });
 
 client.on('qr', (qr) => {
